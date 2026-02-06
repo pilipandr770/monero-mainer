@@ -1,14 +1,22 @@
 from flask import Flask, render_template, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
+from flask_sock import Sock
 from config import Config
+from stratum_proxy import get_proxy
 import os
 import time
 import sys
+import json
+import logging
 from sqlalchemy import text
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config.from_object(Config)
 db = SQLAlchemy(app)
+sock = Sock(app)
 
 class Stats(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -70,6 +78,59 @@ def ensure_columns():
             ADD COLUMN IF NOT EXISTS gross_estimated_xmr FLOAT DEFAULT 0,
             ADD COLUMN IF NOT EXISTS dev_fee_collected FLOAT DEFAULT 0
         """))
+
+
+@sock.route('/ws/mining')
+def mining_ws(ws):
+    """WebSocket endpoint that bridges browser ↔ Stratum pool."""
+    proxy = get_proxy(app.config['POOL_URL'], app.config['XMR_WALLET'])
+    if not proxy:
+        ws.send(json.dumps({"type": "error", "message": "Cannot connect to mining pool"}))
+        return
+
+    def on_pool_msg(msg_str):
+        """Forward pool messages to this browser client."""
+        try:
+            ws.send(msg_str)
+        except Exception:
+            pass
+
+    proxy.add_listener(on_pool_msg)
+    logger.info("Browser miner connected via WebSocket")
+
+    try:
+        while True:
+            data = ws.receive(timeout=60)
+            if data is None:
+                break
+            try:
+                msg = json.loads(data)
+                msg_type = msg.get('type', '')
+
+                if msg_type == 'submit':
+                    # Browser found a valid share
+                    nonce = msg.get('nonce', '')
+                    result_hash = msg.get('result', '')
+                    job_id = msg.get('job_id', '')
+                    success = proxy.submit_share(nonce, result_hash, job_id)
+                    ws.send(json.dumps({"type": "submit_ack", "success": success}))
+                    logger.info(f"Share submitted: nonce={nonce[:8]}... success={success}")
+
+                elif msg_type == 'get_job':
+                    # Browser requests current job
+                    if proxy.job:
+                        ws.send(json.dumps({"method": "job", "params": proxy.job}))
+
+                elif msg_type == 'keepalive':
+                    ws.send(json.dumps({"type": "keepalive_ack"}))
+
+            except json.JSONDecodeError:
+                logger.warning("Invalid JSON from browser")
+    except Exception as e:
+        logger.info(f"Browser miner disconnected: {e}")
+    finally:
+        proxy.remove_listener(on_pool_msg)
+        logger.info("Browser miner WebSocket closed")
 
 
 def init_db_with_retry(max_retries=5, delay=2):

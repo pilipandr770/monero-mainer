@@ -4,84 +4,217 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
+    paths:
+      - '.github/workflows/build-xmrig-wasm.yml'
+      - 'wasm_src/**'
 
 jobs:
   build-wasm:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
         with:
-          fetch-depth: 0
+          version: 3.1.51
 
-      - name: Set up environment
+      - name: Verify Emscripten
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake git python3 python3-pip pkg-config libssl-dev libuv1-dev
+          emcc --version
+          em++ --version
 
-      - name: Install Emscripten SDK
+      - name: Create CryptoNight WASM source
         run: |
-          git clone https://github.com/emscripten-core/emsdk.git emsdk
-          cd emsdk
-          ./emsdk install latest
-          ./emsdk activate latest
-          echo "source $(pwd)/emsdk_env.sh" >> $GITHUB_ENV
+          mkdir -p wasm_build
+          cat > wasm_build/cryptonight.c << 'CEOF'
+          #include <stdint.h>
+          #include <string.h>
+          #include <emscripten.h>
 
-      - name: Source EMSDK environment
-        shell: bash
+          static const uint8_t sbox[256] = {
+            0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
+            0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
+            0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
+            0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
+            0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
+            0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
+            0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
+            0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
+            0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
+            0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
+            0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
+            0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
+            0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
+            0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
+            0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
+            0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
+          };
+
+          static const uint64_t keccak_rc[24] = {
+            0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL,
+            0x8000000080008000ULL, 0x000000000000808bULL, 0x0000000080000001ULL,
+            0x8000000080008081ULL, 0x8000000000008009ULL, 0x000000000000008aULL,
+            0x0000000000000088ULL, 0x0000000080008009ULL, 0x000000008000000aULL,
+            0x000000008000808bULL, 0x800000000000008bULL, 0x8000000000008089ULL,
+            0x8000000000008003ULL, 0x8000000000008002ULL, 0x8000000000000080ULL,
+            0x000000000000800aULL, 0x800000008000000aULL, 0x8000000080008081ULL,
+            0x8000000000008080ULL, 0x0000000080000001ULL, 0x8000000080008008ULL
+          };
+
+          #define ROTL64(x, y) (((x) << (y)) | ((x) >> (64 - (y))))
+
+          static void keccakf(uint64_t st[25]) {
+            for (int round = 0; round < 24; round++) {
+              uint64_t bc[5];
+              for (int i = 0; i < 5; i++)
+                bc[i] = st[i] ^ st[i+5] ^ st[i+10] ^ st[i+15] ^ st[i+20];
+              for (int i = 0; i < 5; i++) {
+                uint64_t t = bc[(i+4)%5] ^ ROTL64(bc[(i+1)%5], 1);
+                for (int j = 0; j < 25; j += 5) st[j+i] ^= t;
+              }
+              uint64_t t = st[1];
+              static const int piln[24] = {10,7,11,17,18,3,5,16,8,21,24,4,15,23,19,13,12,2,20,14,22,9,6,1};
+              static const int rotc[24] = {1,3,6,10,15,21,28,36,45,55,2,14,27,41,56,8,25,43,62,18,39,61,20,44};
+              for (int i = 0; i < 24; i++) {
+                int j = piln[i]; uint64_t temp = st[j]; st[j] = ROTL64(t, rotc[i]); t = temp;
+              }
+              for (int j = 0; j < 25; j += 5) {
+                uint64_t tmp[5];
+                for (int i = 0; i < 5; i++) tmp[i] = st[j+i];
+                for (int i = 0; i < 5; i++) st[j+i] = tmp[i] ^ ((~tmp[(i+1)%5]) & tmp[(i+2)%5]);
+              }
+              st[0] ^= keccak_rc[round];
+            }
+          }
+
+          static void keccak(const uint8_t *in, int inlen, uint8_t *md, int mdlen) {
+            uint64_t st[25]; uint8_t temp[144]; int rsiz = 136;
+            memset(st, 0, sizeof(st));
+            while (inlen >= rsiz) {
+              for (int i = 0; i < rsiz/8; i++) st[i] ^= ((uint64_t*)in)[i];
+              keccakf(st); inlen -= rsiz; in += rsiz;
+            }
+            memset(temp, 0, rsiz); memcpy(temp, in, inlen);
+            temp[inlen] = 1; temp[rsiz-1] |= 0x80;
+            for (int i = 0; i < rsiz/8; i++) st[i] ^= ((uint64_t*)temp)[i];
+            keccakf(st); memcpy(md, st, mdlen);
+          }
+
+          #define CN_MEMORY 2097152
+          #define CN_ITER   524288
+
+          static uint8_t scratchpad[CN_MEMORY] __attribute__((aligned(16)));
+
+          static void aes_round(uint8_t *block, const uint8_t *key) {
+            uint8_t tmp[16], shifted[16];
+            for (int i = 0; i < 16; i++) tmp[i] = sbox[block[i]];
+            shifted[0]=tmp[0]; shifted[1]=tmp[5]; shifted[2]=tmp[10]; shifted[3]=tmp[15];
+            shifted[4]=tmp[4]; shifted[5]=tmp[9]; shifted[6]=tmp[14]; shifted[7]=tmp[3];
+            shifted[8]=tmp[8]; shifted[9]=tmp[13]; shifted[10]=tmp[2]; shifted[11]=tmp[7];
+            shifted[12]=tmp[12]; shifted[13]=tmp[1]; shifted[14]=tmp[6]; shifted[15]=tmp[11];
+            for (int i = 0; i < 16; i++) block[i] = shifted[i] ^ key[i];
+          }
+
+          EMSCRIPTEN_KEEPALIVE
+          void cn_hash(const uint8_t *input, uint32_t input_len, uint8_t *output) {
+            uint8_t state[200]; uint8_t aes_key[32]; uint8_t text[128];
+            keccak(input, input_len, state, 200);
+            memcpy(aes_key, state, 32); memcpy(text, state+64, 128);
+            for (uint32_t i = 0; i < CN_MEMORY; i += 128) {
+              for (int j = 0; j < 128; j += 16) { aes_round(text+j, aes_key); aes_round(text+j, aes_key+16); }
+              memcpy(scratchpad+i, text, 128);
+            }
+            uint64_t a[2], b[2];
+            memcpy(a, state, 16); memcpy(b, state+32, 16);
+            for (uint32_t i = 0; i < CN_ITER; i++) {
+              uint32_t addr = ((uint32_t)a[0]) & 0x1FFFF0;
+              uint64_t *p = (uint64_t*)(scratchpad+addr);
+              uint8_t block[16]; memcpy(block, p, 16);
+              aes_round(block, (uint8_t*)a);
+              uint64_t *b64 = (uint64_t*)block;
+              b64[0] ^= b[0]; b64[1] ^= b[1]; memcpy(p, block, 16);
+              b[0] = a[0]; b[1] = a[1];
+              uint32_t addr2 = ((uint32_t)b64[0]) & 0x1FFFF0;
+              uint64_t *p2 = (uint64_t*)(scratchpad+addr2);
+              uint64_t lo = (uint64_t)((uint32_t)b64[0]) * (uint64_t)((uint32_t)p2[0]);
+              a[0] += lo >> 32; a[1] += (uint32_t)lo;
+              p2[0] ^= a[0]; p2[1] ^= a[1];
+              a[0] ^= p2[0]; a[1] ^= p2[1];
+            }
+            memcpy(text, state+64, 128); memcpy(aes_key, state+32, 32);
+            for (uint32_t i = 0; i < CN_MEMORY; i += 128) {
+              for (int j = 0; j < 128; j += 16) {
+                for (int k = 0; k < 16; k++) text[j+k] ^= scratchpad[i+j+k];
+                aes_round(text+j, aes_key); aes_round(text+j, aes_key+16);
+              }
+            }
+            memcpy(state+64, text, 128);
+            keccak(state, 200, output, 32);
+          }
+
+          EMSCRIPTEN_KEEPALIVE
+          uint32_t get_memory_size(void) { return CN_MEMORY; }
+
+          EMSCRIPTEN_KEEPALIVE
+          int try_hash(const uint8_t *blob, uint32_t blob_len, uint32_t nonce, uint64_t target, uint8_t *out_hash) {
+            uint8_t input[256];
+            if (blob_len > 256) return 0;
+            memcpy(input, blob, blob_len);
+            if (blob_len >= 43) {
+              input[39] = nonce & 0xFF; input[40] = (nonce>>8) & 0xFF;
+              input[41] = (nonce>>16) & 0xFF; input[42] = (nonce>>24) & 0xFF;
+            }
+            cn_hash(input, blob_len, out_hash);
+            uint64_t *hash64 = (uint64_t*)(out_hash+24);
+            return (*hash64 < target) ? 1 : 0;
+          }
+          CEOF
+
+      - name: Build CryptoNight WASM
         run: |
-          source emsdk/emsdk_env.sh
-          env | grep EMSDK | sed -n '1,50p'
+          cd wasm_build
+          emcc cryptonight.c \
+            -O2 \
+            -s WASM=1 \
+            -s EXPORTED_FUNCTIONS='["_cn_hash","_try_hash","_get_memory_size","_malloc","_free"]' \
+            -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","HEAPU8"]' \
+            -s TOTAL_MEMORY=67108864 \
+            -s ALLOW_MEMORY_GROWTH=0 \
+            -s MODULARIZE=1 \
+            -s EXPORT_NAME='CryptoNight' \
+            -s NO_EXIT_RUNTIME=1 \
+            -s ENVIRONMENT='web,worker' \
+            -o cryptonight.js
+          ls -lh cryptonight.*
 
-      - name: Clone XMRig
+      - name: Copy to static
         run: |
-          git clone --depth 1 https://github.com/xmrig/xmrig.git xmrig
+          mkdir -p minewithme-flask/static/wasm
+          cp wasm_build/cryptonight.js minewithme-flask/static/wasm/
+          cp wasm_build/cryptonight.wasm minewithme-flask/static/wasm/
+          ls -lh minewithme-flask/static/wasm/
 
-      - name: Build XMRig (WASM)
-        shell: bash
-        env:
-          EMSDK: ${{ env.EMSDK }}
-        run: |
-          source emsdk/emsdk_env.sh
-          mkdir -p xmrig/build && cd xmrig/build
-          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$EMSCRIPTEN/cmake/Modules/Platform/Emscripten.cmake -DWITH_TLS=OFF -DWITH_HWLOC=OFF -DWITH_CUDA=OFF -DWITH_OPENCL=OFF || true
-          cmake --build . -- -j$(nproc) || true
-          # find generated wasm (if any)
-          find .. -type f -iname "*.wasm" -print -maxdepth 4 || true
-
-      - name: Copy wasm to repo (if built)
-        shell: bash
-        run: |
-          mkdir -p static/wasm
-          WASM_FILE=$(find xmrig -type f -iname "*.wasm" | head -n1 || true)
-          if [ -n "$WASM_FILE" ]; then
-            echo "Found wasm: $WASM_FILE"
-            cp "$WASM_FILE" static/wasm/xmrig.wasm
-            ls -lh static/wasm
-          else
-            echo "No wasm file was generated. Build may have failed or xmrig does not produce wasm by default."
-            exit 1
-          fi
-
-      - name: Commit wasm to repo
+      - name: Commit WASM files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add static/wasm/xmrig.wasm || true
-          git commit -m "chore(wasm): add built xmrig.wasm" || echo "Nothing to commit"
-          git push origin HEAD:main || echo "Push failed"
+          git add minewithme-flask/static/wasm/cryptonight.js minewithme-flask/static/wasm/cryptonight.wasm
+          git diff --cached --stat
+          git commit -m "chore(wasm): build CryptoNight WASM from source" || echo "Nothing to commit"
+          git push origin HEAD:main || echo "Push failed - check permissions"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload artifact (xmrig.wasm)
+      - name: Upload WASM artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xmrig-wasm
-          path: static/wasm/xmrig.wasm
-
-      - name: Success message
-        if: success()
-        run: echo "xmrig wasm build workflow finished - check artifacts or static/wasm/xmrig.wasm in repo."
+          name: cryptonight-wasm
+          path: |
+            wasm_build/cryptonight.js
+            wasm_build/cryptonight.wasm
+          if-no-files-found: warn
