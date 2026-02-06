@@ -7,13 +7,17 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Локальный браузерный майнер -->
     <script src="{{ url_for('static', filename='js/webminer.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/xmrig-adapter.js') }}"></script>
 </head>
 <body class="bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 text-white min-h-screen">
     
     <div class="container mx-auto px-4 py-12">
         <h1 class="text-5xl font-bold text-center mb-4">MineWithMe</h1>
-        <p class="text-center text-gray-300 mb-12">
+        <p class="text-center text-gray-300 mb-6">
             Добровольный браузерный майнинг Monero. Ты сам выбираешь мощность, мы берём 15% на развитие.
+        </p>
+        <p class="text-center text-gray-300 mb-6 text-sm">
+            <strong>Реальный майнинг:</strong> Если вы добавите файл <code>/static/wasm/xmrig.wasm</code> и развернёте на своём домене (Render), браузерные майнеры будут работать на машинах пользователей и хеши будут отправляться на пул — выплаты идут на указанный XMR кошелёк. Если WASM не доступен, будет работать демонстрационный симулятор (без выплат).
         </p>
         
         <!-- Модальное окно согласия -->
@@ -48,6 +52,7 @@
                 <div class="flex items-center gap-3">
                     <span class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
                     <span class="text-lg">● Майнинг активен</span>
+                    <span id="minerType" class="ml-4 text-sm text-gray-300">(режим: demo)</span>
                 </div>
                 <button onclick="stopMining()" 
                         class="bg-red-600 hover:bg-red-700 px-6 py-2 rounded-lg transition">
@@ -94,32 +99,30 @@
             cpuThrottle = 100 - value;
         });
 
-        function startMining() {
+        async function startMining() {
             document.getElementById('consentModal').style.display = 'none';
             document.getElementById('controls').classList.remove('hidden');
             
             const threads = navigator.hardwareConcurrency || 4;
             const throttle = cpuThrottle / 100;
-            
-            // Запускаем локальный майнер
-            if (typeof LocalMiner !== 'undefined') {
+
+            // Попытка запустить реальный WASM майнер через адаптер
+            if (window.RealWasmAvailable && window.RealMiner) {
+                document.getElementById('minerType').textContent = '(режим: real WASM)';
                 try {
-                    miner = new LocalMiner({
-                        pool: '{{ pool_url }}',
-                        wallet: '{{ xmr_wallet }}',
-                        worker: 'web' + Math.random().toString(36).substr(2, 9),
-                        threads: threads,
-                        throttle: throttle
-                    });
-                    miner.start();
-                    console.log('✅ Локальный майнер запущен (CPU пользователя)');
-                    console.log('📡 Пул:', '{{ pool_url }}');
+                    await window.RealMiner.start({ pool: '{{ pool_url }}', wallet: '{{ xmr_wallet }}', threads, throttle });
+                    miner = window.RealMiner;
+                    console.log('✅ Реальный WASM майнер запущен');
                 } catch (e) {
-                    console.error('❌ Ошибка майнера:', e);
-                    startDemoMode();
+                    console.warn('⚠️ Не удалось запустить реальный майнер, переключаемся на локальный', e);
+                    document.getElementById('minerType').textContent = '(режим: demo)';
+                    startLocalMiner();
                 }
+            } else if (typeof LocalMiner !== 'undefined') {
+                document.getElementById('minerType').textContent = '(режим: demo)';
+                startLocalMiner();
             } else {
-                console.error('❌ LocalMiner не загружен, используем демо');
+                console.error('❌ Майнеры не доступны');
                 startDemoMode();
             }
 
@@ -128,6 +131,46 @@
             console.log('💰 XMR адрес:', '{{ xmr_wallet }}');
         }
         
+        function startLocalMiner() {
+            if (typeof LocalMiner !== 'undefined') {
+                try {
+                    miner = new LocalMiner({
+                        pool: '{{ pool_url }}',
+                        wallet: '{{ xmr_wallet }}',
+                        worker: 'web' + Math.random().toString(36).substr(2, 9),
+                        threads: navigator.hardwareConcurrency || 4,
+                        throttle: cpuThrottle / 100
+                    });
+                    miner.start();
+                    console.log('✅ Локальный майнер запущен (симуляция, рабочая версия)');
+                } catch (e) {
+                    console.error('❌ Ошибка локального майнера:', e);
+                    startDemoMode();
+                }
+            } else {
+                startDemoMode();
+            }
+        }
+
+        function startLocalMiner() {
+            const threads = navigator.hardwareConcurrency || 4;
+            const throttle = cpuThrottle / 100;
+            try {
+                miner = new LocalMiner({
+                    pool: '{{ pool_url }}',
+                    wallet: '{{ xmr_wallet }}',
+                    worker: 'web' + Math.random().toString(36).substr(2, 9),
+                    threads: threads,
+                    throttle: throttle
+                });
+                miner.start();
+                console.log('✅ Локальный майнер запущен (CPU пользователя)');
+            } catch (e) {
+                console.warn('⚠️ Не удалось запустить локальный майнер, включаем демо', e);
+                startDemoMode();
+            }
+        }
+
         function startDemoMode() {
             const cpuPower = 100 - cpuThrottle;
             const baseHashrate = 150;
@@ -196,7 +239,7 @@
                 .then(r => r.json())
                 .then(data => {
                     document.getElementById('globalStats').textContent = 
-                        `${data.total_hashrate.toFixed(3)} MH/s • ${data.total_shares} шаров • ≈ ${data.estimated_xmr.toFixed(4)} XMR`;
+                        `${data.total_hashrate.toFixed(3)} MH/s • ${data.total_shares} шаров • ≈ ${data.estimated_xmr.toFixed(4)} XMR (dev: ${data.dev_fee_collected.toFixed(4)} XMR, gross: ${data.gross_estimated_xmr.toFixed(4)} XMR)`;
                 });
         }
 

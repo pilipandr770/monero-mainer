@@ -4,6 +4,7 @@ from config import Config
 import os
 import time
 import sys
+from sqlalchemy import text
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -13,7 +14,9 @@ class Stats(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     total_hashrate = db.Column(db.Float, default=0.0)   # MH/s
     total_shares = db.Column(db.Integer, default=0)
-    estimated_xmr = db.Column(db.Float, default=0.0)
+    estimated_xmr = db.Column(db.Float, default=0.0)   # net (after dev fee)
+    gross_estimated_xmr = db.Column(db.Float, default=0.0)  # gross estimated XMR
+    dev_fee_collected = db.Column(db.Float, default=0.0)    # collected dev fee in XMR
 
 @app.route('/')
 def index():
@@ -33,7 +36,9 @@ def get_stats():
     return jsonify({
         'total_hashrate': stats.total_hashrate,
         'total_shares': stats.total_shares,
-        'estimated_xmr': stats.estimated_xmr
+        'estimated_xmr': stats.estimated_xmr,
+        'gross_estimated_xmr': stats.gross_estimated_xmr,
+        'dev_fee_collected': stats.dev_fee_collected
     })
 
 @app.route('/api/submit', methods=['POST'])
@@ -41,11 +46,31 @@ def submit_stats():
     data = request.json
     stats = Stats.query.first()
     if stats:
+        # hashrate from client is H/s, store in MH/s for global stat
         stats.total_hashrate = data.get('hashrate', 0) / 1000   # в MH/s
         stats.total_shares += data.get('shares', 0)
-        stats.estimated_xmr += data.get('estimated', 0) * Config.DEV_FEE
+
+        # Client should send estimated gross XMR (e.g., estimated XMR/day)
+        gross = float(data.get('estimated', 0.0))
+        dev_fee = gross * Config.DEV_FEE
+        net = gross - dev_fee
+
+        stats.gross_estimated_xmr += gross
+        stats.dev_fee_collected += dev_fee
+        stats.estimated_xmr += net
+
         db.session.commit()
     return jsonify({'status': 'ok'})
+
+def ensure_columns():
+    engine = db.get_engine()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            ALTER TABLE stats
+            ADD COLUMN IF NOT EXISTS gross_estimated_xmr FLOAT DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS dev_fee_collected FLOAT DEFAULT 0
+        """))
+
 
 def init_db_with_retry(max_retries=5, delay=2):
     """Инициализация БД с повторными попытками"""
@@ -53,7 +78,8 @@ def init_db_with_retry(max_retries=5, delay=2):
         try:
             with app.app_context():
                 db.create_all()
-                print(f"✅ База данных успешно инициализирована")
+                ensure_columns()
+                print(f"✅ База данных успешно инициализирована (и колонки проверены)")
                 return True
         except Exception as e:
             if attempt < max_retries - 1:
