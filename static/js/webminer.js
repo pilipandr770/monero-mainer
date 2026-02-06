@@ -81,6 +81,7 @@ class LocalMiner {
                 // Сохраняем значение для конкретного воркера и суммируем
                 this.workerHashes[threadId] = e.data.value;
                 this.totalHashes = this.workerHashes.reduce((a, b) => a + b, 0);
+            }
         };
         
         this.workers.push(worker);
