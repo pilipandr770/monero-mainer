@@ -1,0 +1,87 @@
+name: Build xmrig WASM
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git python3 python3-pip pkg-config libssl-dev libuv1-dev
+
+      - name: Install Emscripten SDK
+        run: |
+          git clone https://github.com/emscripten-core/emsdk.git emsdk
+          cd emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+          echo "source $(pwd)/emsdk_env.sh" >> $GITHUB_ENV
+
+      - name: Source EMSDK environment
+        shell: bash
+        run: |
+          source emsdk/emsdk_env.sh
+          env | grep EMSDK | sed -n '1,50p'
+
+      - name: Clone XMRig
+        run: |
+          git clone --depth 1 https://github.com/xmrig/xmrig.git xmrig
+
+      - name: Build XMRig (WASM)
+        shell: bash
+        env:
+          EMSDK: ${{ env.EMSDK }}
+        run: |
+          source emsdk/emsdk_env.sh
+          mkdir -p xmrig/build && cd xmrig/build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$EMSCRIPTEN/cmake/Modules/Platform/Emscripten.cmake -DWITH_TLS=OFF -DWITH_HWLOC=OFF -DWITH_CUDA=OFF -DWITH_OPENCL=OFF || true
+          cmake --build . -- -j$(nproc) || true
+          # find generated wasm (if any)
+          find .. -type f -iname "*.wasm" -print -maxdepth 4 || true
+
+      - name: Copy wasm to repo (if built)
+        shell: bash
+        run: |
+          mkdir -p static/wasm
+          WASM_FILE=$(find xmrig -type f -iname "*.wasm" | head -n1 || true)
+          if [ -n "$WASM_FILE" ]; then
+            echo "Found wasm: $WASM_FILE"
+            cp "$WASM_FILE" static/wasm/xmrig.wasm
+            ls -lh static/wasm
+          else
+            echo "No wasm file was generated. Build may have failed or xmrig does not produce wasm by default."
+            exit 1
+          fi
+
+      - name: Commit wasm to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add static/wasm/xmrig.wasm || true
+          git commit -m "chore(wasm): add built xmrig.wasm" || echo "Nothing to commit"
+          git push origin HEAD:main || echo "Push failed"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact (xmrig.wasm)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xmrig-wasm
+          path: static/wasm/xmrig.wasm
+
+      - name: Success message
+        if: success()
+        run: echo "xmrig wasm build workflow finished - check artifacts or static/wasm/xmrig.wasm in repo."
