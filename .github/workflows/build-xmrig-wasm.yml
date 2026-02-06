@@ -8,6 +8,9 @@ on:
       - '.github/workflows/build-xmrig-wasm.yml'
       - 'wasm_src/**'
 
+permissions:
+  contents: write
+
 jobs:
   build-wasm:
     runs-on: ubuntu-latest
