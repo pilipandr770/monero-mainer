@@ -14,7 +14,7 @@ from sqlalchemy.engine import Engine
 import os
 
 # Ensure DB sessions run with the project schema (default to 'minewithme')
-PROJECT_SCHEMA = os.getenv('PROJECT_SCHEMA', 'minewithme')
+PROJECT_SCHEMA = os.getenv('PROJECT_SCHEMA') or 'minewithme'
 @event.listens_for(Engine, "connect")
 def _set_search_path(dbapi_connection, connection_record):
     try:
@@ -44,6 +44,15 @@ class Stats(db.Model):
     estimated_xmr = db.Column(db.Float, default=0.0)   # net (after dev fee)
     gross_estimated_xmr = db.Column(db.Float, default=0.0)  # gross estimated XMR
     dev_fee_collected = db.Column(db.Float, default=0.0)    # collected dev fee in XMR
+
+# Ensure table schema is applied (guard for empty env values)
+try:
+    if not PROJECT_SCHEMA:
+        PROJECT_SCHEMA = 'minewithme'
+    Stats.__table__.schema = PROJECT_SCHEMA
+    logger.info(f"Stats.__table__.schema set to: {Stats.__table__.schema}")
+except Exception as e:
+    logger.warning(f"Could not set Stats.__table__.schema at import: {e}")
 
 @app.route('/')
 def index():
