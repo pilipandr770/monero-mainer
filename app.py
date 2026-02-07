@@ -143,6 +143,13 @@ def ensure_columns():
 def mining_ws(ws):
     """WebSocket endpoint — per-session pool connection with wallet switching."""
     logger.info("New WebSocket mining connection")
+
+    # Debug: log handshake headers (Sec-WebSocket-* and related) to diagnose protocol errors
+    try:
+        ws_headers = {k: v for k, v in ws.environ.items() if k.startswith('HTTP_SEC_WEBSOCKET') or k in ('HTTP_CONNECTION', 'HTTP_UPGRADE')}
+        logger.info('WS handshake headers: %s', ws_headers)
+    except Exception as e:
+        logger.warning('Failed to read WS handshake headers: %s', e)
     
     dev_wallet = app.config['XMR_WALLET']
     pool_url = app.config['POOL_URL']
@@ -171,7 +178,13 @@ def mining_ws(ws):
             try:
                 data = ws.receive(timeout=60)
             except Exception as recv_err:
+                # Log with traceback and ws environ for debugging close reasons
                 logger.info(f"WebSocket receive error: {recv_err}")
+                try:
+                    env_info = {k: v for k, v in ws.environ.items() if k.startswith('HTTP_SEC_WEBSOCKET') or k in ('HTTP_CONNECTION', 'HTTP_UPGRADE')}
+                    logger.info('WS env on receive error: %s', env_info)
+                except Exception:
+                    logger.debug('Failed to collect ws environ on receive error', exc_info=True)
                 break
             if data is None:
                 break
@@ -217,6 +230,7 @@ def mining_ws(ws):
                 logger.warning("Invalid JSON from browser")
     except Exception as e:
         logger.info(f"Browser miner disconnected: {e}")
+        logger.info('WS environ on disconnect: %s', {k: v for k, v in ws.environ.items() if k.startswith('HTTP_SEC_WEBSOCKET') or k in ('HTTP_CONNECTION', 'HTTP_UPGRADE')})
     finally:
         session.disconnect()
         logger.info("Browser session closed, pool connection terminated")
