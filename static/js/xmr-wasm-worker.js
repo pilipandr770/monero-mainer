@@ -12,6 +12,9 @@ let currentJob = null;
 let totalHashes = 0;
 let hashrate = 0;
 let acceptedShares = 0;
+let workerId = 0;
+let totalWorkers = 1;
+let nonceCounter = 0;
 
 // Load WASM module
 importScripts('/static/wasm/cryptonight.js');
@@ -65,13 +68,15 @@ function mineLoop() {
     cn.HEAPU8.set(blob, inputPtr);
 
     const batchSize = 64;
-    const startNonce = Math.floor(Math.random() * 0xFFFFFFFF);
+    // Use worker-specific nonce range to avoid collisions across workers
+    const nonceBase = (workerId * 0x10000000) + nonceCounter;
+    nonceCounter += batchSize;
     const startTime = performance.now();
 
     for (let i = 0; i < batchSize; i++) {
         if (!mining) break;
 
-        const nonce = (startNonce + totalHashes + i) & 0xFFFFFFFF;
+        const nonce = (nonceBase + i) & 0xFFFFFFFF;
 
         // Set nonce in blob (offset 39, little-endian)
         cn.HEAPU8[inputPtr + 39] = nonce & 0xFF;
@@ -89,7 +94,6 @@ function mineLoop() {
 
         if (hashHigh32 <= target && target > 0) {
             // Found valid share!
-            // Nonce for submission: as it appears in the blob (already LE in memory)
             const nonceHex = [
                 (nonce & 0xFF).toString(16).padStart(2, '0'),
                 ((nonce >> 8) & 0xFF).toString(16).padStart(2, '0'),
@@ -121,7 +125,8 @@ function mineLoop() {
         type: 'stats',
         hashrate: hashrate,
         totalHashes: totalHashes,
-        acceptedShares: acceptedShares
+        acceptedShares: acceptedShares,
+        batchHashes: batchSize
     });
 
     // Continue mining with small delay to avoid UI freeze
@@ -138,6 +143,10 @@ self.onmessage = function(e) {
     } else if (data.type === 'job') {
         // New job from pool (via main thread WebSocket)
         currentJob = data.job;
+        if (data.workerId !== undefined) workerId = data.workerId;
+        if (data.totalWorkers !== undefined) totalWorkers = data.totalWorkers;
+        nonceCounter = 0;  // Reset nonce counter for new job
+        console.log(`[Worker ${workerId}] Got job ${currentJob.job_id}, target=${currentJob.target}`);
         if (!mining) {
             mining = true;
             mineLoop();
@@ -150,7 +159,8 @@ self.onmessage = function(e) {
             type: 'stats',
             hashrate: hashrate,
             totalHashes: totalHashes,
-            acceptedShares: acceptedShares
+            acceptedShares: acceptedShares,
+            batchHashes: 0
         });
     }
 };

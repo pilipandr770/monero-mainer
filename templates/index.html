@@ -23,11 +23,23 @@
         
         <!-- Модальное окно согласия -->
         <div id="consentModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div class="bg-gray-800 rounded-lg p-8 max-w-md">
+            <div class="bg-gray-800 rounded-lg p-8 max-w-lg">
                 <h2 class="text-2xl font-bold mb-4">Согласие на майнинг</h2>
-                <p class="text-gray-300 mb-6">
+                <p class="text-gray-300 mb-4">
                     Сайт будет использовать до <span id="cpuDisplay">30</span>% твоего CPU. Можно остановить в любой момент.
                 </p>
+
+                <!-- Кошелёк пользователя -->
+                <div class="mb-4">
+                    <label class="block text-sm mb-2 text-purple-300 font-semibold">💰 Твой XMR кошелёк (85% вознаграждения тебе):</label>
+                    <input type="text" id="userWallet" placeholder="4... или 8... (95 символов)" 
+                           class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white text-sm font-mono 
+                                  focus:border-purple-500 focus:ring-1 focus:ring-purple-500 outline-none"
+                           spellcheck="false" autocomplete="off">
+                    <p id="walletError" class="text-red-400 text-xs mt-1 hidden">Введи правильный XMR адрес (95 символов, начинается с 4 или 8)</p>
+                    <p class="text-gray-500 text-xs mt-1">Без кошелька — 100% майнинг идёт на поддержку проекта</p>
+                </div>
+
                 <div class="mb-6">
                     <label class="block text-sm mb-2">Уровень нагрузки:</label>
                     <input type="range" id="cpuSlider" min="10" max="100" value="30" 
@@ -49,7 +61,7 @@
 
         <!-- Панель управления -->
         <div id="controls" class="max-w-4xl mx-auto bg-gray-800 bg-opacity-50 backdrop-blur rounded-lg p-8 hidden">
-            <div class="flex justify-between items-center mb-6">
+            <div class="flex justify-between items-center mb-4">
                 <div class="flex items-center gap-3">
                     <span class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
                     <span class="text-lg">● Майнинг активен</span>
@@ -59,6 +71,12 @@
                         class="bg-red-600 hover:bg-red-700 px-6 py-2 rounded-lg transition">
                     Остановить
                 </button>
+            </div>
+            <!-- Wallet info -->
+            <div id="walletInfo" class="mb-6 bg-gray-700 bg-opacity-30 rounded-lg p-3 text-sm hidden">
+                <div id="walletInfoUser" class="text-green-300 mb-1"></div>
+                <div id="walletInfoDev" class="text-gray-400"></div>
+                <div id="walletInfoMode" class="text-purple-300 mt-1 font-semibold"></div>
             </div>
             
             <!-- Статистика пользователя -->
@@ -92,6 +110,7 @@
         let demoHashrate = 0;
         let demoShares = 0;
         let miningInterval = null;
+        let userWalletAddress = '';
 
         document.getElementById('cpuSlider').addEventListener('input', (e) => {
             const value = e.target.value;
@@ -100,9 +119,45 @@
             cpuThrottle = 100 - value;
         });
 
+        function validateXmrWallet(addr) {
+            if (!addr || addr.trim() === '') return true; // empty is ok (donation mode)
+            addr = addr.trim();
+            if (addr.length < 90 || addr.length > 110) return false;
+            if (!addr.startsWith('4') && !addr.startsWith('8')) return false;
+            return /^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]+$/.test(addr);
+        }
+
         async function startMining() {
+            // Validate wallet
+            const walletInput = document.getElementById('userWallet').value.trim();
+            const walletErr = document.getElementById('walletError');
+            
+            if (walletInput && !validateXmrWallet(walletInput)) {
+                walletErr.classList.remove('hidden');
+                return;
+            }
+            walletErr.classList.add('hidden');
+            userWalletAddress = walletInput;
+
             document.getElementById('consentModal').style.display = 'none';
             document.getElementById('controls').classList.remove('hidden');
+
+            // Show wallet info
+            const walletInfoEl = document.getElementById('walletInfo');
+            if (userWalletAddress) {
+                walletInfoEl.classList.remove('hidden');
+                document.getElementById('walletInfoUser').textContent = 
+                    '💰 Твой кошелёк: ' + userWalletAddress.slice(0, 8) + '...' + userWalletAddress.slice(-6) + ' (85%)';
+                document.getElementById('walletInfoDev').textContent = 
+                    '🔧 Dev fee: {{ xmr_wallet[:8] }}...{{ xmr_wallet[-6:] }} (15%)';
+                document.getElementById('walletInfoMode').textContent = '⛏️ Каждые ~100 сек: 85с → тебе, 15с → проекту';
+            } else {
+                walletInfoEl.classList.remove('hidden');
+                document.getElementById('walletInfoUser').textContent = '⚠️ Кошелёк не указан — 100% идёт на поддержку проекта';
+                document.getElementById('walletInfoDev').textContent = 
+                    '🔧 Кошелёк проекта: {{ xmr_wallet[:8] }}...{{ xmr_wallet[-6:] }}';
+                document.getElementById('walletInfoMode').textContent = '';
+            }
             
             const threads = navigator.hardwareConcurrency || 4;
             const throttle = cpuThrottle / 100;
@@ -111,7 +166,13 @@
             if (window.RealWasmAvailable && window.RealMiner) {
                 document.getElementById('minerType').textContent = '(режим: real WASM)';
                 try {
-                    await window.RealMiner.start({ pool: '{{ pool_url }}', wallet: '{{ xmr_wallet }}', threads, throttle });
+                    await window.RealMiner.start({ 
+                        pool: '{{ pool_url }}', 
+                        wallet: '{{ xmr_wallet }}',
+                        userWallet: userWalletAddress,
+                        threads, 
+                        throttle 
+                    });
                     miner = window.RealMiner;
                     console.log('✅ Реальный WASM майнер запущен');
                 } catch (e) {
@@ -129,7 +190,8 @@
 
             setInterval(updateStats, 2000);
             setInterval(loadGlobalStats, 5000);
-            console.log('💰 XMR адрес:', '{{ xmr_wallet }}');
+            console.log('💰 User wallet:', userWalletAddress || '(not set — donation mode)');
+            console.log('🔧 Dev wallet:', '{{ xmr_wallet }}');
         }
         
         function startLocalMiner() {

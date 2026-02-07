@@ -34,15 +34,29 @@ class RealWasmMiner {
         this.ws = null;
         this.running = false;
         this.threads = 1;
+        this.workerHashrates = {};  // per-worker hashrate tracking
         this.hashrate = 0;
         this.totalHashes = 0;
         this.acceptedShares = 0;
         this.currentJob = null;
+        this._reconnecting = false;
+        this.userWallet = '';  // user's XMR wallet for 85% rewards
     }
 
     async start(opts) {
         this.threads = opts.threads || navigator.hardwareConcurrency || 2;
         this.running = true;
+        this.userWallet = opts.userWallet || '';
+
+        // On reconnect, clean up old workers
+        if (this.workers.length > 0) {
+            console.log('Cleaning up old workers before reconnect...');
+            this.workers.forEach(w => {
+                try { w.postMessage({ type: 'stop' }); w.terminate(); } catch(e) {}
+            });
+            this.workers = [];
+            this.workerHashrates = {};
+        }
 
         // Connect WebSocket to Flask Stratum proxy
         const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -53,6 +67,12 @@ class RealWasmMiner {
 
             this.ws.onopen = () => {
                 console.log('✅ WebSocket connected to Stratum proxy');
+                this._reconnecting = false;
+                // Send user wallet to server for fee splitting
+                this.ws.send(JSON.stringify({ 
+                    type: 'set_wallet', 
+                    wallet: this.userWallet 
+                }));
                 // Request current job
                 this.ws.send(JSON.stringify({ type: 'get_job' }));
                 // Start workers
@@ -71,17 +91,24 @@ class RealWasmMiner {
 
             this.ws.onerror = (e) => {
                 console.error('WebSocket error:', e);
-                reject(new Error('WebSocket connection failed'));
+                if (!this._reconnecting) {
+                    reject(new Error('WebSocket connection failed'));
+                }
             };
 
             this.ws.onclose = () => {
                 console.log('WebSocket closed');
-                if (this.running) {
+                if (this.running && !this._reconnecting) {
+                    this._reconnecting = true;
                     // Auto-reconnect after 5s
                     setTimeout(() => {
                         if (this.running) {
                             console.log('Reconnecting to pool...');
-                            this.start(opts).catch(console.error);
+                            this.start(opts).catch(err => {
+                                console.error('Reconnect failed:', err);
+                                // Retry again
+                                this._reconnecting = false;
+                            });
                         }
                     }, 5000);
                 }
@@ -92,14 +119,15 @@ class RealWasmMiner {
     _startWorkers() {
         for (let i = 0; i < this.threads; i++) {
             const worker = new Worker('/static/js/xmr-wasm-worker.js');
+            const workerId = i;
 
             worker.onmessage = (e) => {
                 const data = e.data;
                 if (data.type === 'ready') {
-                    console.log(`Worker ${i} ready`);
+                    console.log(`Worker ${workerId} ready`);
                     // Send current job if available
                     if (this.currentJob) {
-                        worker.postMessage({ type: 'job', job: this.currentJob });
+                        worker.postMessage({ type: 'job', job: this.currentJob, workerId: workerId, totalWorkers: this.threads });
                     }
                 } else if (data.type === 'share') {
                     // Forward share to pool via WebSocket
@@ -110,13 +138,20 @@ class RealWasmMiner {
                             result: data.result,
                             job_id: data.job_id
                         }));
+                        console.log(`⛏️ Share from worker ${workerId}: nonce=${data.nonce}`);
                     }
                     this.acceptedShares++;
                 } else if (data.type === 'stats') {
-                    this.hashrate = data.hashrate || 0;
-                    this.totalHashes += (data.totalHashes - this.totalHashes > 0) ? data.totalHashes - this.totalHashes : 0;
+                    // Aggregate hashrate from all workers
+                    this.workerHashrates[workerId] = data.hashrate || 0;
+                    let total = 0;
+                    for (const key in this.workerHashrates) {
+                        total += this.workerHashrates[key];
+                    }
+                    this.hashrate = total;
+                    this.totalHashes += data.batchHashes || 0;
                 } else if (data.type === 'error') {
-                    console.error(`Worker ${i} error:`, data.error);
+                    console.error(`Worker ${workerId} error:`, data.error);
                 }
             };
 
@@ -129,23 +164,45 @@ class RealWasmMiner {
         // New job from pool
         if (msg.method === 'job' && msg.params) {
             this.currentJob = msg.params;
-            console.log('📋 New job:', this.currentJob.job_id);
+            console.log('📋 New job:', this.currentJob.job_id, 'target:', this.currentJob.target);
             // Forward to all workers
-            this.workers.forEach(w => {
-                w.postMessage({ type: 'job', job: this.currentJob });
+            this.workers.forEach((w, idx) => {
+                w.postMessage({ type: 'job', job: this.currentJob, workerId: idx, totalWorkers: this.threads });
             });
         }
         // Submit acknowledgement
         if (msg.type === 'submit_ack') {
             console.log('✓ Share submission:', msg.success ? 'accepted' : 'rejected');
         }
+        // Wallet acknowledgement
+        if (msg.type === 'wallet_ack') {
+            console.log('💰 Wallet ack:', msg.message);
+        }
+        // Wallet switch notification (85/15 timer)
+        if (msg.type === 'wallet_switch') {
+            const modeEl = document.getElementById('walletInfoMode');
+            if (modeEl) {
+                if (msg.wallet_type === 'user') {
+                    modeEl.textContent = '⛏️ Сейчас: майнинг на ТВОЙ кошелёк (85%)';
+                    modeEl.className = 'text-green-300 mt-1 font-semibold';
+                } else {
+                    modeEl.textContent = '🔧 Сейчас: dev fee (15%)';
+                    modeEl.className = 'text-yellow-300 mt-1 font-semibold';
+                }
+            }
+            console.log(`🔄 Wallet switch: ${msg.wallet_type} — ${msg.message}`);
+        }
         // Login result with job
-        if (msg.result && msg.result.job) {
+        if (msg.result && typeof msg.result === 'object' && msg.result.job) {
             this.currentJob = msg.result.job;
-            console.log('📋 Initial job:', this.currentJob.job_id);
-            this.workers.forEach(w => {
-                w.postMessage({ type: 'job', job: this.currentJob });
+            console.log('📋 Initial job:', this.currentJob.job_id, 'target:', this.currentJob.target);
+            this.workers.forEach((w, idx) => {
+                w.postMessage({ type: 'job', job: this.currentJob, workerId: idx, totalWorkers: this.threads });
             });
+        }
+        // Pool error
+        if (msg.error) {
+            console.error('Pool error:', msg.error);
         }
     }
 

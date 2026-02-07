@@ -2,7 +2,7 @@ from flask import Flask, render_template, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_sock import Sock
 from config import Config
-from stratum_proxy import get_proxy
+from stratum_proxy import create_session
 import os
 import time
 import sys
@@ -86,10 +86,19 @@ def ensure_columns():
 
 @sock.route('/ws/mining')
 def mining_ws(ws):
-    """WebSocket endpoint that bridges browser ↔ Stratum pool."""
-    proxy = get_proxy(app.config['POOL_URL'], app.config['XMR_WALLET'])
-    if not proxy:
-        ws.send(json.dumps({"type": "error", "message": "Cannot connect to mining pool"}))
+    """WebSocket endpoint — per-session pool connection with wallet switching."""
+    logger.info("New WebSocket mining connection")
+    
+    dev_wallet = app.config['XMR_WALLET']
+    pool_url = app.config['POOL_URL']
+    
+    # Create per-session proxy (starts with dev wallet, switches when user sets wallet)
+    session = create_session(pool_url, dev_wallet)
+    if not session:
+        try:
+            ws.send(json.dumps({"type": "error", "message": "Cannot connect to mining pool"}))
+        except Exception:
+            pass
         return
 
     def on_pool_msg(msg_str):
@@ -99,31 +108,52 @@ def mining_ws(ws):
         except Exception:
             pass
 
-    proxy.add_listener(on_pool_msg)
-    logger.info("Browser miner connected via WebSocket")
+    session.set_listener(on_pool_msg)
+    logger.info(f"Browser miner connected, session has job: {session.job is not None}")
 
     try:
         while True:
-            data = ws.receive(timeout=60)
+            try:
+                data = ws.receive(timeout=60)
+            except Exception as recv_err:
+                logger.info(f"WebSocket receive error: {recv_err}")
+                break
             if data is None:
                 break
             try:
                 msg = json.loads(data)
                 msg_type = msg.get('type', '')
 
-                if msg_type == 'submit':
+                if msg_type == 'set_wallet':
+                    # Browser sends user's XMR wallet for 85% rewards
+                    user_wallet = msg.get('wallet', '')
+                    session.set_user_wallet(user_wallet)
+                    ws.send(json.dumps({
+                        "type": "wallet_ack",
+                        "has_user_wallet": session.has_user_wallet,
+                        "message": f"Wallet set: 85% user / 15% dev" if session.has_user_wallet else "No wallet: 100% dev"
+                    }))
+
+                elif msg_type == 'submit':
                     # Browser found a valid share
                     nonce = msg.get('nonce', '')
                     result_hash = msg.get('result', '')
                     job_id = msg.get('job_id', '')
-                    success = proxy.submit_share(nonce, result_hash, job_id)
+                    success = session.submit_share(nonce, result_hash, job_id)
                     ws.send(json.dumps({"type": "submit_ack", "success": success}))
-                    logger.info(f"Share submitted: nonce={nonce[:8]}... success={success}")
+                    logger.info(f"Share submitted: nonce={nonce[:8]}... job={job_id} success={success}")
 
                 elif msg_type == 'get_job':
                     # Browser requests current job
-                    if proxy.job:
-                        ws.send(json.dumps({"method": "job", "params": proxy.job}))
+                    if session.job:
+                        job_msg = json.dumps({"method": "job", "params": session.job})
+                        ws.send(job_msg)
+                        logger.info(f"Sent cached job to browser: {session.job.get('job_id', '?')}")
+                    else:
+                        logger.warning("Browser requested job but session has no job yet")
+                        time.sleep(2)
+                        if session.job:
+                            ws.send(json.dumps({"method": "job", "params": session.job}))
 
                 elif msg_type == 'keepalive':
                     ws.send(json.dumps({"type": "keepalive_ack"}))
@@ -133,8 +163,8 @@ def mining_ws(ws):
     except Exception as e:
         logger.info(f"Browser miner disconnected: {e}")
     finally:
-        proxy.remove_listener(on_pool_msg)
-        logger.info("Browser miner WebSocket closed")
+        session.disconnect()
+        logger.info("Browser session closed, pool connection terminated")
 
 
 def init_db_with_retry(max_retries=5, delay=2):
