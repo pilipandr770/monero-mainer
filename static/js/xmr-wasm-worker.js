@@ -94,12 +94,17 @@ function mineLoop() {
         cnHash(inputPtr, blobLen, outputPtr);
 
         // Check hash against target
-        // Stratum: compare LOW 32 bits of hash (first 4 bytes, little-endian) against target
-        // Hash must be LESS than target for valid share
+        // For CryptoNight/RandomX: full 256-bit hash comparison (little-endian)
+        // First check that most significant bytes are zero (difficulty requirement)
+        // Then check low 32 bits against target
         const hashBytes = new Uint8Array(cn.HEAPU8.buffer, outputPtr, 32);
         const hashLow32 = (hashBytes[0]) | (hashBytes[1] << 8) | (hashBytes[2] << 16) | ((hashBytes[3] << 24) >>> 0);
 
-        if (hashLow32 <= target && target > 0) {
+        // High bytes (24-31) must be zero for valid share at pool difficulty
+        const hashHigh = hashBytes[31] | hashBytes[30] | hashBytes[29] | hashBytes[28] | 
+                         hashBytes[27] | hashBytes[26] | hashBytes[25] | hashBytes[24];
+        
+        if (hashHigh === 0 && hashLow32 <= target && target > 0) {
             // Found valid share!
             const nonceHex = [
                 (nonce & 0xFF).toString(16).padStart(2, '0'),
