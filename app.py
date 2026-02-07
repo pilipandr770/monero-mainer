@@ -67,6 +67,18 @@ def get_stats():
         'dev_fee_collected': stats.dev_fee_collected
     })
 
+
+@app.route('/healthz', methods=['GET'])
+def healthz():
+    """Light health check: verifies DB connectivity and returns 200 if OK."""
+    try:
+        # lightweight DB touch
+        db.session.execute(text('SELECT 1'))
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        logger.warning('Health check failed: %s', e)
+        return jsonify({'status': 'error', 'details': str(e)}), 503
+
 @app.route('/api/submit', methods=['POST'])
 def submit_stats():
     data = request.json

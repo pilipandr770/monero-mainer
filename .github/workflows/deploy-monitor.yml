@@ -1,0 +1,30 @@
+name: Deploy monitor
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  wait-for-deploy:
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_URL: ${{ secrets.DEPLOY_URL || 'https://monero-mainer.onrender.com' }}
+      TIMEOUT_MINUTES: 10
+      SLEEP_SECONDS: 10
+    steps:
+      - name: Wait for HTTP 200 on /healthz
+        run: |
+          echo "Monitoring deploy at $DEPLOY_URL/healthz"
+          TIMEOUT=$(( ${{ env.TIMEOUT_MINUTES }} * 60 ))
+          END=$(( $(date +%s) + TIMEOUT ))
+          while [ $(date +%s) -lt $END ]; do
+            if curl -sf "$DEPLOY_URL/healthz" >/dev/null; then
+              echo "✅ Service healthy: $DEPLOY_URL/healthz"
+              exit 0
+            fi
+            echo "Waiting for service... sleeping ${{ env.SLEEP_SECONDS }}s"
+            sleep ${{ env.SLEEP_SECONDS }}
+          done
+          echo "❌ Timeout waiting for $DEPLOY_URL/healthz" >&2
+          exit 1
