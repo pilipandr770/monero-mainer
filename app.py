@@ -11,6 +11,7 @@ import logging
 import mimetypes
 from sqlalchemy import text, event
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import ProgrammingError, OperationalError
 import os
 
 # Ensure DB sessions run with the project schema (default to 'minewithme')
@@ -56,7 +57,17 @@ except Exception as e:
 
 @app.route('/')
 def index():
-    stats = Stats.query.first()
+    try:
+        stats = Stats.query.first()
+    except (ProgrammingError, OperationalError) as e:
+        logger.warning('DB query failed in index: %s — attempting to ensure columns and retry', e)
+        try:
+            ensure_columns()
+            stats = Stats.query.first()
+        except Exception as e2:
+            logger.error('Retry after ensure_columns failed: %s', e2)
+            return "Database not ready", 503
+
     if not stats:
         stats = Stats(total_hashrate=0, total_shares=0, estimated_xmr=0)
         db.session.add(stats)
