@@ -18,7 +18,9 @@ importScripts('/static/wasm/cryptonight.js');
 
 async function initWasm() {
     try {
-        cn = await CryptoNight();
+        cn = await CryptoNight({
+            locateFile: (path) => '/static/wasm/' + path
+        });
         cnHash = cn.cwrap('cn_hash', null, ['number', 'number', 'number']);
         tryHash = cn.cwrap('try_hash', 'number', ['number', 'number', 'number', 'number', 'number']);
         postMessage({ type: 'ready' });
@@ -40,16 +42,14 @@ function bytesToHex(bytes) {
     return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function targetToUint64(targetHex) {
-    // Pool sends target as 8-char hex (little-endian 32-bit) or longer
-    // Convert to difficulty threshold
-    if (targetHex.length <= 8) {
-        // 4-byte target, convert to 64-bit threshold
-        const t = parseInt(targetHex, 16);
-        if (t === 0) return 0xFFFFFFFFFFFFFFFF;
-        return Math.floor(0xFFFFFFFF / t) * 0x100000000;
-    }
-    return parseInt(targetHex, 16);
+function parseTarget(targetHex) {
+    // Pool sends target as little-endian hex (e.g. "b4b0bf00" = difficulty ~84)
+    // We need to compare the HIGH 32 bits of the hash (bytes 28-31) against the
+    // target interpreted as little-endian uint32.
+    // Convert LE hex to actual uint32 value:
+    const bytes = hexToBytes(targetHex.padEnd(8, '0').slice(0, 8));
+    // Little-endian: first byte is lowest
+    return (bytes[0]) | (bytes[1] << 8) | (bytes[2] << 16) | ((bytes[3] << 24) >>> 0);
 }
 
 function mineLoop() {
@@ -57,14 +57,14 @@ function mineLoop() {
 
     const blob = hexToBytes(currentJob.blob);
     const blobLen = blob.length;
-    const target = targetToUint64(currentJob.target);
+    const target = parseTarget(currentJob.target);
 
     // Allocate WASM memory
     const inputPtr = cn._malloc(blobLen);
     const outputPtr = cn._malloc(32);
     cn.HEAPU8.set(blob, inputPtr);
 
-    const batchSize = 256;
+    const batchSize = 64;
     const startNonce = Math.floor(Math.random() * 0xFFFFFFFF);
     const startTime = performance.now();
 
@@ -82,22 +82,26 @@ function mineLoop() {
         // Compute CryptoNight hash
         cnHash(inputPtr, blobLen, outputPtr);
 
-        // Check against target (last 8 bytes of hash)
+        // Check hash against target
+        // Stratum: compare high 32 bits of hash (bytes 28-31 LE) against target
         const hashBytes = new Uint8Array(cn.HEAPU8.buffer, outputPtr, 32);
-        const hashLow = hashBytes[24] | (hashBytes[25] << 8) | (hashBytes[26] << 16) | (hashBytes[27] << 24);
-        const hashHigh = hashBytes[28] | (hashBytes[29] << 8) | (hashBytes[30] << 16) | (hashBytes[31] << 24);
-        const hashVal = hashHigh * 0x100000000 + (hashLow >>> 0);
+        const hashHigh32 = (hashBytes[28]) | (hashBytes[29] << 8) | (hashBytes[30] << 16) | ((hashBytes[31] << 24) >>> 0);
 
-        if (hashVal < target) {
+        if (hashHigh32 <= target && target > 0) {
             // Found valid share!
-            const nonceHex = nonce.toString(16).padStart(8, '0');
-            // Reverse nonce bytes for submission (little-endian hex)
-            const nonceLe = nonceHex.match(/../g).reverse().join('');
+            // Nonce for submission: as it appears in the blob (already LE in memory)
+            const nonceHex = [
+                (nonce & 0xFF).toString(16).padStart(2, '0'),
+                ((nonce >> 8) & 0xFF).toString(16).padStart(2, '0'),
+                ((nonce >> 16) & 0xFF).toString(16).padStart(2, '0'),
+                ((nonce >> 24) & 0xFF).toString(16).padStart(2, '0')
+            ].join('');
+
             const resultHex = bytesToHex(hashBytes);
 
             postMessage({
                 type: 'share',
-                nonce: nonceLe,
+                nonce: nonceHex,
                 result: resultHex,
                 job_id: currentJob.job_id
             });
@@ -120,9 +124,9 @@ function mineLoop() {
         acceptedShares: acceptedShares
     });
 
-    // Continue mining (yield to event loop)
+    // Continue mining with small delay to avoid UI freeze
     if (mining) {
-        setTimeout(mineLoop, 1);
+        setTimeout(mineLoop, 10);
     }
 }
 

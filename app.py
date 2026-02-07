@@ -8,7 +8,11 @@ import time
 import sys
 import json
 import logging
+import mimetypes
 from sqlalchemy import text
+
+# Ensure .wasm files are served with correct MIME type
+mimetypes.add_type('application/wasm', '.wasm')
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
