@@ -34,6 +34,18 @@ def run():
     max_attempts = int(os.getenv('MIGRATE_MAX_ATTEMPTS', '12'))  # default ~60s with 5s sleep
     sleep_seconds = int(os.getenv('MIGRATE_RETRY_SECONDS', '5'))
 
+    # Define qualified table creation SQL to avoid relying solely on search_path
+    create_stats_sql = f"""
+    CREATE TABLE IF NOT EXISTS {schema}.stats (
+        id SERIAL PRIMARY KEY,
+        total_hashrate FLOAT DEFAULT 0,
+        total_shares INTEGER DEFAULT 0,
+        estimated_xmr FLOAT DEFAULT 0,
+        gross_estimated_xmr FLOAT DEFAULT 0,
+        dev_fee_collected FLOAT DEFAULT 0
+    );
+    """
+
     while attempts < max_attempts:
         try:
             logging.info(f'Connecting to DB (attempt {attempts+1}/{max_attempts})')
@@ -41,8 +53,7 @@ def run():
             conn.autocommit = True
             with conn.cursor() as cur:
                 cur.execute(f"CREATE SCHEMA IF NOT EXISTS {schema};")
-                cur.execute(f"SET search_path TO {schema};")
-                cur.execute(sql)
+                cur.execute(create_stats_sql)
             conn.close()
             logging.info('Migrations applied to schema: %s', schema)
             return
