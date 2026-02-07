@@ -5,7 +5,7 @@ psycopg2-binary==2.9.9
 python-dotenv==1.0.1
 # Production servers
 gunicorn==21.2.0
-# use a published gevent-websocket version compatible with PyPI
-gevent-websocket==0.10.1
+# Use simple-websocket for flask-sock (modern, no RSV1 bugs)
+simple-websocket==1.0.0
 # ensure gevent runtime is available
 gevent==23.9.1
