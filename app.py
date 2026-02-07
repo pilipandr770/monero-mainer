@@ -71,14 +71,23 @@ def get_stats():
 
 @app.route('/healthz', methods=['GET'])
 def healthz():
-    """Light health check: verifies DB connectivity and returns 200 if OK."""
+    """Light health check with debug info: verifies DB connectivity and reports search_path and table presence."""
     try:
         # lightweight DB touch
         db.session.execute(text('SELECT 1'))
-        return jsonify({'status': 'ok'}), 200
+        # report current search_path and check for stats table
+        schema_row = db.session.execute(text("SELECT current_schema() as cs, current_setting('search_path') as sp")).mappings().first()
+        tables = db.session.execute(text("SELECT table_schema, table_name FROM information_schema.tables WHERE table_name='stats' ORDER BY table_schema")).fetchall()
+        tables_info = [{'schema': r[0], 'name': r[1]} for r in tables]
+        return jsonify({'status': 'ok', 'current_schema': schema_row['cs'], 'search_path': schema_row['sp'], 'tables': tables_info}), 200
     except Exception as e:
         logger.warning('Health check failed: %s', e)
-        return jsonify({'status': 'error', 'details': str(e)}), 503
+        # try to return some DB error details
+        try:
+            row = db.session.execute(text("SELECT current_setting('search_path')")).scalar()
+        except Exception:
+            row = None
+        return jsonify({'status': 'error', 'details': str(e), 'search_path': row}), 503
 
 @app.route('/api/submit', methods=['POST'])
 def submit_stats():
