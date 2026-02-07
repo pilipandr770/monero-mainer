@@ -7,6 +7,7 @@
 let cn = null;       // CryptoNight WASM module
 let cnHash = null;   // cwrap'd cn_hash function
 let tryHash = null;  // cwrap'd try_hash function
+let wasmReady = false; // Track WASM initialization status
 let mining = false;
 let currentJob = null;
 let totalHashes = 0;
@@ -26,8 +27,15 @@ async function initWasm() {
         });
         cnHash = cn.cwrap('cn_hash', null, ['number', 'number', 'number']);
         tryHash = cn.cwrap('try_hash', 'number', ['number', 'number', 'number', 'number', 'number']);
+        wasmReady = true;
         postMessage({ type: 'ready' });
         console.log('[Worker] CryptoNight WASM initialized');
+        
+        // Start mining if job was received during init
+        if (currentJob && !mining) {
+            mining = true;
+            mineLoop();
+        }
     } catch (e) {
         postMessage({ type: 'error', error: 'Failed to init WASM: ' + e.message });
     }
@@ -56,7 +64,7 @@ function parseTarget(targetHex) {
 }
 
 function mineLoop() {
-    if (!mining || !currentJob || !cn) return;
+    if (!mining || !currentJob || !wasmReady || !cn) return;
 
     const blob = hexToBytes(currentJob.blob);
     const blobLen = blob.length;
@@ -147,7 +155,8 @@ self.onmessage = function(e) {
         if (data.totalWorkers !== undefined) totalWorkers = data.totalWorkers;
         nonceCounter = 0;  // Reset nonce counter for new job
         console.log(`[Worker ${workerId}] Got job ${currentJob.job_id}, target=${currentJob.target}`);
-        if (!mining) {
+        // Only start mining if WASM is ready
+        if (wasmReady && !mining) {
             mining = true;
             mineLoop();
         }
