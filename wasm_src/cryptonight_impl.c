@@ -230,7 +230,7 @@ static void aes_pseudo_round(uint8_t *data, const uint8_t *expanded_key) {
 extern void blake256_hash(uint8_t *out, const uint8_t *in, uint64_t inlen);
 extern void groestl(const uint8_t *data, unsigned long long databitlen, uint8_t *hashval);
 extern int  jh_hash(int hashbitlen, const uint8_t *data, unsigned long long databitlen, uint8_t *hashval);
-extern int  skein_hash(int hashbitlen, const uint8_t *data, unsigned long long databitlen, uint8_t *hashval);
+extern int  skein_hash(int hashbitlen, const uint8_t *data, size_t databitlen, uint8_t *hashval);
 
 /* ========================= CryptoNight v0 ========================= */
 
@@ -381,7 +381,7 @@ void cn_hash(const uint8_t *input, uint32_t input_len, uint8_t *output) {
         case 0:  blake256_hash(output, state, 200);                 break;
         case 1:  groestl(state, (unsigned long long)200 * 8, output); break;
         case 2:  jh_hash(256, state, (unsigned long long)200 * 8, output); break;
-        default: skein_hash(256, state, (unsigned long long)200 * 8, output); break;
+        default: skein_hash(256, state, (size_t)(200 * 8), output); break;
     }
 
     free(hp_state);

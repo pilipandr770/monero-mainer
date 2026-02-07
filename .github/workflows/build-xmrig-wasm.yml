@@ -34,7 +34,6 @@ jobs:
         run: |
           mkdir -p monero_crypto
           BASE="https://raw.githubusercontent.com/monero-project/monero/master/src/crypto"
-          COMMON="https://raw.githubusercontent.com/monero-project/monero/master/src/common"
 
           echo "=== Downloading hash function sources ==="
           # Blake-256
@@ -55,17 +54,13 @@ jobs:
           curl -fSL "$BASE/skein.h"          -o monero_crypto/skein.h
           curl -fSL "$BASE/skein_port.h"     -o monero_crypto/skein_port.h
 
-          # Utility headers needed by hash functions
-          curl -fSL "$COMMON/int-util.h"     -o monero_crypto/int-util.h
-          curl -fSL "$COMMON/warnings.h"     -o monero_crypto/warnings.h
-
           echo "=== Downloaded files ==="
           ls -la monero_crypto/
 
-      # ---- Create stub headers for missing dependencies ----
+      # ---- Create stub/shim headers for missing epee dependencies ----
       - name: Create stub headers
         run: |
-          # blake256.c includes <memwipe.h> (from epee submodule)
+          # blake256.c includes <memwipe.h> (from epee submodule - not in src/crypto)
           cat > monero_crypto/memwipe.h << 'STUBEOF'
           #pragma once
           #include <string.h>
@@ -74,6 +69,34 @@ jobs:
               while (n--) *p++ = 0;
           }
           STUBEOF
+
+          # int-util.h (from contrib/epee/include - not in src/common)
+          # Provides BYTE_ORDER, LITTLE_ENDIAN, BIG_ENDIAN for groestl_tables.h and skein_port.h
+          cat > monero_crypto/int-util.h << 'INTEOF'
+          #pragma once
+          #include <stdint.h>
+          #include <string.h>
+          #ifndef LITTLE_ENDIAN
+          #define LITTLE_ENDIAN 1234
+          #endif
+          #ifndef BIG_ENDIAN
+          #define BIG_ENDIAN 4321
+          #endif
+          #ifndef BYTE_ORDER
+          #define BYTE_ORDER LITTLE_ENDIAN
+          #endif
+          INTEOF
+
+          # warnings.h (from contrib/epee/include - not in src/common)
+          cat > monero_crypto/warnings.h << 'WARNEOF'
+          #pragma once
+          #define PUSH_WARNINGS
+          #define POP_WARNINGS
+          #define DISABLE_VS_WARNINGS(...)
+          #define DISABLE_GCC_WARNING(x)
+          #define DISABLE_CLANG_WARNING(x)
+          #define DISABLE_GCC_AND_CLANG_WARNING(x)
+          WARNEOF
 
           # Compatibility defines for WASM (little-endian, 32-bit pointers)
           cat > monero_crypto/wasm_compat.h << 'COMPATEOF'
@@ -93,6 +116,7 @@ jobs:
           COMPATEOF
 
           echo "=== Stub headers created ==="
+          ls -la monero_crypto/
 
       # ---- Compile CryptoNight WASM ----
       - name: Build CryptoNight WASM
