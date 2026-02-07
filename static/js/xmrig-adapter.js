@@ -48,14 +48,12 @@ class RealWasmMiner {
         this.running = true;
         this.userWallet = opts.userWallet || '';
 
-        // On reconnect, clean up old workers
-        if (this.workers.length > 0) {
-            console.log('Cleaning up old workers before reconnect...');
-            this.workers.forEach(w => {
-                try { w.postMessage({ type: 'stop' }); w.terminate(); } catch(e) {}
-            });
-            this.workers = [];
-            this.workerHashrates = {};
+        // Start workers only if none exist (don't destroy workers on short reconnects)
+        if (this.workers.length === 0) {
+            // No workers yet — will create them when WS opens
+        } else {
+            // Reuse existing workers on reconnect to avoid losing state and having no workers ready when job arrives
+            console.log('Reusing existing workers on reconnect');
         }
 
         // Connect WebSocket to Flask Stratum proxy
@@ -75,8 +73,17 @@ class RealWasmMiner {
                 }));
                 // Request current job
                 this.ws.send(JSON.stringify({ type: 'get_job' }));
-                // Start workers
-                this._startWorkers();
+                // Start workers if we don't have them already
+                if (this.workers.length === 0) {
+                    this._startWorkers();
+                } else {
+                    // If workers exist and we already have a job cached, forward it
+                    if (this.currentJob) {
+                        this.workers.forEach((w, idx) => {
+                            try { w.postMessage({ type: 'job', job: this.currentJob, workerId: idx, totalWorkers: this.threads }); } catch(e) {}
+                        });
+                    }
+                }
                 resolve();
             };
 
