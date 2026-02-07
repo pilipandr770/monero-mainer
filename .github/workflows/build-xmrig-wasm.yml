@@ -1,4 +1,5 @@
 name: Build CryptoNight WASM
+# trigger: correct cn implementation
 
 on:
   workflow_dispatch:
