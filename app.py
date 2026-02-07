@@ -9,7 +9,21 @@ import sys
 import json
 import logging
 import mimetypes
-from sqlalchemy import text
+from sqlalchemy import text, event
+from sqlalchemy.engine import Engine
+import os
+
+# Ensure DB sessions run with the project schema if provided
+PROJECT_SCHEMA = os.getenv('PROJECT_SCHEMA')
+if PROJECT_SCHEMA:
+    @event.listens_for(Engine, "connect")
+    def _set_search_path(dbapi_connection, connection_record):
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute(f"SET search_path TO {PROJECT_SCHEMA};")
+            cursor.close()
+        except Exception:
+            pass
 
 # Ensure .wasm files are served with correct MIME type
 mimetypes.add_type('application/wasm', '.wasm')
