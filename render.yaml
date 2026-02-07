@@ -6,7 +6,7 @@ services:
     plan: starter
     dockerfilePath: Dockerfile
     buildCommand: docker build -t minewithme .
-    startCommand: sh -c "python scripts/run_migrations.py && gunicorn -w 4 -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker 'app:app' --bind 0.0.0.0:$PORT"
+    startCommand: sh -c "python scripts/run_migrations.py && python -c \"from app import init_db_with_retry; init_db_with_retry()\" && gunicorn -w 4 -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker 'app:app' --bind 0.0.0.0:$PORT"
     envVars:
       - key: DATABASE_URL
         # Set this to your Postgres URL in Render dashboard; do NOT commit secrets to git

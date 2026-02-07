@@ -9,7 +9,20 @@ import sys
 import json
 import logging
 import mimetypes
-from sqlalchemy import text
+from sqlalchemy import text, event
+from sqlalchemy.engine import Engine
+import os
+
+# Ensure DB sessions run with the project schema (default to 'minewithme')
+PROJECT_SCHEMA = os.getenv('PROJECT_SCHEMA') or 'minewithme'
+@event.listens_for(Engine, "connect")
+def _set_search_path(dbapi_connection, connection_record):
+    try:
+        cursor = dbapi_connection.cursor()
+        cursor.execute(f"SET search_path TO {PROJECT_SCHEMA};")
+        cursor.close()
+    except Exception:
+        pass
 
 # Ensure .wasm files are served with correct MIME type
 mimetypes.add_type('application/wasm', '.wasm')
@@ -23,12 +36,23 @@ db = SQLAlchemy(app)
 sock = Sock(app)
 
 class Stats(db.Model):
+    __table_args__ = {'schema': PROJECT_SCHEMA}
+
     id = db.Column(db.Integer, primary_key=True)
     total_hashrate = db.Column(db.Float, default=0.0)   # MH/s
     total_shares = db.Column(db.Integer, default=0)
     estimated_xmr = db.Column(db.Float, default=0.0)   # net (after dev fee)
     gross_estimated_xmr = db.Column(db.Float, default=0.0)  # gross estimated XMR
     dev_fee_collected = db.Column(db.Float, default=0.0)    # collected dev fee in XMR
+
+# Ensure table schema is applied (guard for empty env values)
+try:
+    if not PROJECT_SCHEMA:
+        PROJECT_SCHEMA = 'minewithme'
+    Stats.__table__.schema = PROJECT_SCHEMA
+    logger.info(f"Stats.__table__.schema set to: {Stats.__table__.schema}")
+except Exception as e:
+    logger.warning(f"Could not set Stats.__table__.schema at import: {e}")
 
 @app.route('/')
 def index():
@@ -53,6 +77,27 @@ def get_stats():
         'dev_fee_collected': stats.dev_fee_collected
     })
 
+
+@app.route('/healthz', methods=['GET'])
+def healthz():
+    """Light health check with debug info: verifies DB connectivity and reports search_path and table presence."""
+    try:
+        # lightweight DB touch
+        db.session.execute(text('SELECT 1'))
+        # report current search_path and check for stats table
+        schema_row = db.session.execute(text("SELECT current_schema() as cs, current_setting('search_path') as sp")).mappings().first()
+        tables = db.session.execute(text("SELECT table_schema, table_name FROM information_schema.tables WHERE table_name='stats' ORDER BY table_schema")).fetchall()
+        tables_info = [{'schema': r[0], 'name': r[1]} for r in tables]
+        return jsonify({'status': 'ok', 'current_schema': schema_row['cs'], 'search_path': schema_row['sp'], 'tables': tables_info}), 200
+    except Exception as e:
+        logger.warning('Health check failed: %s', e)
+        # try to return some DB error details
+        try:
+            row = db.session.execute(text("SELECT current_setting('search_path')")).scalar()
+        except Exception:
+            row = None
+        return jsonify({'status': 'error', 'details': str(e), 'search_path': row}), 503
+
 @app.route('/api/submit', methods=['POST'])
 def submit_stats():
     data = request.json
@@ -76,12 +121,11 @@ def submit_stats():
 
 def ensure_columns():
     engine = db.get_engine()
+    schema = PROJECT_SCHEMA or 'public'
+    table_name = f"{schema}.stats"
     with engine.begin() as conn:
-        conn.execute(text("""
-            ALTER TABLE stats
-            ADD COLUMN IF NOT EXISTS gross_estimated_xmr FLOAT DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS dev_fee_collected FLOAT DEFAULT 0
-        """))
+        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS gross_estimated_xmr FLOAT DEFAULT 0"))
+        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS dev_fee_collected FLOAT DEFAULT 0"))
 
 
 @sock.route('/ws/mining')
