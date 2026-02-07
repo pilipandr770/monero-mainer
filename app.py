@@ -13,17 +13,16 @@ from sqlalchemy import text, event
 from sqlalchemy.engine import Engine
 import os
 
-# Ensure DB sessions run with the project schema if provided
-PROJECT_SCHEMA = os.getenv('PROJECT_SCHEMA')
-if PROJECT_SCHEMA:
-    @event.listens_for(Engine, "connect")
-    def _set_search_path(dbapi_connection, connection_record):
-        try:
-            cursor = dbapi_connection.cursor()
-            cursor.execute(f"SET search_path TO {PROJECT_SCHEMA};")
-            cursor.close()
-        except Exception:
-            pass
+# Ensure DB sessions run with the project schema (default to 'minewithme')
+PROJECT_SCHEMA = os.getenv('PROJECT_SCHEMA', 'minewithme')
+@event.listens_for(Engine, "connect")
+def _set_search_path(dbapi_connection, connection_record):
+    try:
+        cursor = dbapi_connection.cursor()
+        cursor.execute(f"SET search_path TO {PROJECT_SCHEMA};")
+        cursor.close()
+    except Exception:
+        pass
 
 # Ensure .wasm files are served with correct MIME type
 mimetypes.add_type('application/wasm', '.wasm')
@@ -37,6 +36,8 @@ db = SQLAlchemy(app)
 sock = Sock(app)
 
 class Stats(db.Model):
+    __table_args__ = {'schema': PROJECT_SCHEMA}
+
     id = db.Column(db.Integer, primary_key=True)
     total_hashrate = db.Column(db.Float, default=0.0)   # MH/s
     total_shares = db.Column(db.Integer, default=0)
@@ -102,12 +103,11 @@ def submit_stats():
 
 def ensure_columns():
     engine = db.get_engine()
+    schema = PROJECT_SCHEMA or 'public'
+    table_name = f"{schema}.stats"
     with engine.begin() as conn:
-        conn.execute(text("""
-            ALTER TABLE stats
-            ADD COLUMN IF NOT EXISTS gross_estimated_xmr FLOAT DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS dev_fee_collected FLOAT DEFAULT 0
-        """))
+        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS gross_estimated_xmr FLOAT DEFAULT 0"))
+        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS dev_fee_collected FLOAT DEFAULT 0"))
 
 
 @sock.route('/ws/mining')
