@@ -34,6 +34,20 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config.from_object(Config)
 db = SQLAlchemy(app)
+
+# WSGI middleware to disable WebSocket extensions (permessage-deflate causes RSV1 protocol errors)
+class DisableWSExtensionsMiddleware:
+    def __init__(self, app):
+        self.app = app
+        
+    def __call__(self, environ, start_response):
+        # Remove Sec-WebSocket-Extensions from client request to prevent compression/extensions
+        if 'HTTP_SEC_WEBSOCKET_EXTENSIONS' in environ:
+            logger.info('Removing HTTP_SEC_WEBSOCKET_EXTENSIONS from WebSocket handshake to avoid RSV1 errors')
+            del environ['HTTP_SEC_WEBSOCKET_EXTENSIONS']
+        return self.app(environ, start_response)
+
+app.wsgi_app = DisableWSExtensionsMiddleware(app.wsgi_app)
 sock = Sock(app)
 
 class Stats(db.Model):
