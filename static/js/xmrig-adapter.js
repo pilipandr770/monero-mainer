@@ -98,26 +98,30 @@ class RealWasmMiner {
 
             this.ws.onerror = (e) => {
                 console.error('WebSocket error:', e);
-                if (!this._reconnecting) {
-                    reject(new Error('WebSocket connection failed'));
-                }
+                // don't reject here if reconnecting
             };
 
-            this.ws.onclose = () => {
-                console.log('WebSocket closed');
-                if (this.running && !this._reconnecting) {
+            this.ws.onclose = (event) => {
+                console.log('WebSocket closed', { code: event.code, reason: event.reason, wasClean: event.wasClean });
+                // exponential backoff on reconnect
+                if (this.running) {
                     this._reconnecting = true;
-                    // Auto-reconnect after 5s
+                    this._reconnectAttempts = (this._reconnectAttempts || 0) + 1;
+                    const base = 5000; // 5s
+                    const delay = Math.min(base * Math.pow(2, this._reconnectAttempts - 1), 60000);
+                    console.log(`Reconnecting to pool in ${delay} ms (attempt ${this._reconnectAttempts})`);
                     setTimeout(() => {
                         if (this.running) {
                             console.log('Reconnecting to pool...');
-                            this.start(opts).catch(err => {
+                            this.start(opts).then(() => {
+                                this._reconnecting = false;
+                                this._reconnectAttempts = 0;
+                            }).catch(err => {
                                 console.error('Reconnect failed:', err);
-                                // Retry again
                                 this._reconnecting = false;
                             });
                         }
-                    }, 5000);
+                    }, delay);
                 }
             };
         });
