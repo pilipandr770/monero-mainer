@@ -72,10 +72,14 @@ def index():
         stats = Stats(total_hashrate=0, total_shares=0, estimated_xmr=0)
         db.session.add(stats)
         db.session.commit()
-    return render_template('index.html', 
+    
+    # Render template and add CSP header to allow WASM eval (Emscripten uses eval/new Function)
+    response = app.make_response(render_template('index.html', 
                          stats=stats, 
                          xmr_wallet=app.config['XMR_WALLET'],
-                         pool_url=app.config['POOL_URL'])
+                         pool_url=app.config['POOL_URL']))
+    response.headers['Content-Security-Policy'] = "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com; default-src 'self'; connect-src 'self' wss: https:; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; img-src 'self' data:; font-src 'self' data:;"
+    return response
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
