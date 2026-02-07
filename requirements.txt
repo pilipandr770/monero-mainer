@@ -5,4 +5,7 @@ psycopg2-binary==2.9.9
 python-dotenv==1.0.1
 # Production servers
 gunicorn==21.2.0
-gevent-websocket==0.12.1
+# use a published gevent-websocket version compatible with PyPI
+gevent-websocket==0.10.1
+# ensure gevent runtime is available
+gevent==23.9.1
