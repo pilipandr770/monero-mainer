@@ -54,10 +54,8 @@ function bytesToHex(bytes) {
 }
 
 function parseTarget(targetHex) {
-    // Pool sends target as little-endian hex (e.g. "b4b0bf00" = difficulty ~84)
-    // We need to compare the HIGH 32 bits of the hash (bytes 28-31) against the
-    // target interpreted as little-endian uint32.
-    // Convert LE hex to actual uint32 value:
+    // Pool sends target as little-endian 32-bit hex (e.g. "b4b0bf00")
+    // Convert LE hex to uint32 value for comparison with hash's first 4 bytes
     const bytes = hexToBytes(targetHex.padEnd(8, '0').slice(0, 8));
     // Little-endian: first byte is lowest
     return (bytes[0]) | (bytes[1] << 8) | (bytes[2] << 16) | ((bytes[3] << 24) >>> 0);
@@ -96,11 +94,12 @@ function mineLoop() {
         cnHash(inputPtr, blobLen, outputPtr);
 
         // Check hash against target
-        // Stratum: compare high 32 bits of hash (bytes 28-31 LE) against target
+        // Stratum: compare LOW 32 bits of hash (first 4 bytes, little-endian) against target
+        // Hash must be LESS than target for valid share
         const hashBytes = new Uint8Array(cn.HEAPU8.buffer, outputPtr, 32);
-        const hashHigh32 = (hashBytes[28]) | (hashBytes[29] << 8) | (hashBytes[30] << 16) | ((hashBytes[31] << 24) >>> 0);
+        const hashLow32 = (hashBytes[0]) | (hashBytes[1] << 8) | (hashBytes[2] << 16) | ((hashBytes[3] << 24) >>> 0);
 
-        if (hashHigh32 <= target && target > 0) {
+        if (hashLow32 <= target && target > 0) {
             // Found valid share!
             const nonceHex = [
                 (nonce & 0xFF).toString(16).padStart(2, '0'),
@@ -128,7 +127,11 @@ function mineLoop() {
     cn._free(inputPtr);
     cn._free(outputPtr);
 
-    // Report stats periodically
+    // Report stats periodically (log every 10th batch to avoid console spam)
+    if (nonceCounter % 640 === 0) {
+        console.log(`[Worker ${workerId}] Hashrate: ${hashrate.toFixed(2)} H/s, Total: ${totalHashes}, Shares: ${acceptedShares}`);
+    }
+    
     postMessage({
         type: 'stats',
         hashrate: hashrate,

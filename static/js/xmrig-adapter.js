@@ -161,6 +161,12 @@ class RealWasmMiner {
                     }
                     this.hashrate = total;
                     this.totalHashes += data.batchHashes || 0;
+                    
+                    // Log aggregated hashrate periodically (every ~5 seconds)
+                    if (!this._lastHashrateLog || (Date.now() - this._lastHashrateLog) > 5000) {
+                        console.log(`💎 Total Hashrate: ${this.hashrate.toFixed(2)} H/s (${this.threads} workers)`);
+                        this._lastHashrateLog = Date.now();
+                    }
                 } else if (data.type === 'error') {
                     console.error(`Worker ${workerId} error:`, data.error);
                 }
