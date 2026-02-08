@@ -219,7 +219,7 @@ class RealWasmMiner {
         }
         // Pool error
         if (msg.error) {
-            console.error('Pool error:', msg.error);
+            console.error('❌ Pool error:', msg.error.code, '-', msg.error.message || JSON.stringify(msg.error));
         }
     }
 

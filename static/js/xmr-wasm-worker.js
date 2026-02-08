@@ -94,17 +94,21 @@ function mineLoop() {
         cnHash(inputPtr, blobLen, outputPtr);
 
         // Check hash against target
-        // For CryptoNight/RandomX: full 256-bit hash comparison (little-endian)
-        // First check that most significant bytes are zero (difficulty requirement)
-        // Then check low 32 bits against target
+        // Monero/CryptoNight: interpret hash as 256-bit LE number, compare with target
+        // Target from pool is 32-bit LE value - represents first 4 bytes of full 256-bit target
+        // For hash < target: bytes 4-31 must be zero, and bytes 0-3 (as uint32) must be <= target
         const hashBytes = new Uint8Array(cn.HEAPU8.buffer, outputPtr, 32);
-        const hashLow32 = (hashBytes[0]) | (hashBytes[1] << 8) | (hashBytes[2] << 16) | ((hashBytes[3] << 24) >>> 0);
-
-        // High bytes (24-31) must be zero for valid share at pool difficulty
-        const hashHigh = hashBytes[31] | hashBytes[30] | hashBytes[29] | hashBytes[28] | 
-                         hashBytes[27] | hashBytes[26] | hashBytes[25] | hashBytes[24];
         
-        if (hashHigh === 0 && hashLow32 <= target && target > 0) {
+        // Check if bytes 4-31 are all zero (required for difficulty check)
+        let hashRest = 0;
+        for (let j = 4; j < 32; j++) {
+            hashRest |= hashBytes[j];
+        }
+        
+        // Compare first 4 bytes (as little-endian uint32) with target
+        const hashLow32 = (hashBytes[0]) | (hashBytes[1] << 8) | (hashBytes[2] << 16) | ((hashBytes[3] << 24) >>> 0);
+        
+        if (hashRest === 0 && hashLow32 <= target && target > 0) {
             // Found valid share!
             const nonceHex = [
                 (nonce & 0xFF).toString(16).padStart(2, '0'),
