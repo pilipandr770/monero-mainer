@@ -214,6 +214,10 @@ class StratumSession:
         logger.info("Session receive loop started")
         while self.connected and not self._stop_event.is_set():
             try:
+                # Check if socket is still valid before attempting recv
+                if not self.sock:
+                    break
+                    
                 data = self.sock.recv(4096)
                 if not data:
                     logger.warning("Pool connection closed (empty recv)")
@@ -237,6 +241,13 @@ class StratumSession:
 
             except socket.timeout:
                 continue
+            except (OSError, AttributeError) as e:
+                # Socket was closed (expected during disconnect) - exit gracefully
+                if self._stop_event.is_set():
+                    break
+                logger.warning(f"Pool socket closed: {e}")
+                self.connected = False
+                break
             except Exception as e:
                 logger.error(f"Pool socket error: {e}", exc_info=True)
                 self.connected = False
@@ -344,8 +355,17 @@ class StratumSession:
         """Close pool connection and stop threads."""
         self._stop_event.set()
         self.connected = False
+        
+        # Give receive loop a moment to notice stop event and exit gracefully
+        time.sleep(0.05)
+        
         if self.sock:
             try:
+                # Shutdown socket for reading/writing before closing
+                try:
+                    self.sock.shutdown(socket.SHUT_RDWR)
+                except (OSError, AttributeError):
+                    pass  # Socket may already be closed
                 self.sock.close()
             except Exception:
                 pass
