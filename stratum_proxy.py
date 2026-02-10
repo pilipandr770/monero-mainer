@@ -136,6 +136,7 @@ class StratumSession:
         while self.connected and not self._stop_event.is_set():
             # Phase 1: Mine for USER wallet (85s)
             if self._current_wallet != self.user_wallet:
+                self._pause_mining_before_switch()
                 self._login(self.user_wallet)
                 self._notify_wallet_switch("user")
 
@@ -147,6 +148,7 @@ class StratumSession:
 
             # Phase 2: Mine for DEV wallet (15s)
             if self._current_wallet != self.dev_wallet:
+                self._pause_mining_before_switch()
                 self._login(self.dev_wallet)
                 self._notify_wallet_switch("dev")
 
@@ -154,6 +156,21 @@ class StratumSession:
                 break
 
         logger.info("Wallet switch loop ended")
+
+    def _pause_mining_before_switch(self):
+        """Pause browser mining and invalidate current job before wallet re-login.
+        This prevents 'invalid job id' errors caused by workers submitting
+        shares for a job that the pool invalidated upon re-login."""
+        self.job = None
+        self.job_id = None
+        if self._send_fn:
+            try:
+                self._send_fn(json.dumps({
+                    "type": "pause_mining",
+                    "message": "Wallet switching — waiting for new job"
+                }))
+            except Exception:
+                pass
 
     def _notify_wallet_switch(self, wallet_type):
         """Notify browser about wallet switch."""
@@ -283,6 +300,15 @@ class StratumSession:
             if not self.reconnect():
                 return False
 
+        # Reject shares for invalidated/stale jobs (e.g. during wallet switch)
+        current_job_id = self.job.get('job_id') if self.job else None
+        if not current_job_id:
+            logger.warning("Share rejected: no current job (wallet switch in progress)")
+            return False
+        if job_id and job_id != current_job_id:
+            logger.warning(f"Share rejected: stale job_id {job_id} != current {current_job_id}")
+            return False
+
         # Rate limit
         now = time.time()
         if now - self._last_share_time < self._share_interval:
@@ -294,7 +320,7 @@ class StratumSession:
             "method": "submit",
             "params": {
                 "id": self.job_id,
-                "job_id": job_id or (self.job.get('job_id') if self.job else ''),
+                "job_id": job_id or current_job_id,
                 "nonce": nonce,
                 "result": result_hash
             }

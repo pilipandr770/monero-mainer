@@ -191,6 +191,14 @@ class RealWasmMiner {
         if (msg.type === 'submit_ack') {
             console.log('✓ Share submission:', msg.success ? 'accepted' : 'rejected');
         }
+        // Pause mining (wallet switch in progress — old job invalidated)
+        if (msg.type === 'pause_mining') {
+            console.log('⏸️ Pausing mining: wallet switch in progress');
+            this.currentJob = null;
+            this.workers.forEach(w => {
+                try { w.postMessage({ type: 'stop' }); } catch(e) {}
+            });
+        }
         // Wallet acknowledgement
         if (msg.type === 'wallet_ack') {
             console.log('💰 Wallet ack:', msg.message);
